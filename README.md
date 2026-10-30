@@ -243,7 +243,8 @@ Per-platform status:
   publishes none and the URL rolls); set `MEGA_MCP_DOWNLOAD_SHA256` to enforce one.
 - **Windows** — implemented; on-device validation in progress. Downloads the official MEGAcmd
   NSIS installer, verifies its Authenticode signature (signer organization
-  `Mega Limited`) before running, then launches it via `explorer.exe` so MEGAcmd
+  `Mega Limited`, or `MEGA Privacy LLC` pinned to its EV registration for
+  MEGAcmd 2.7.0 and later) before running, then launches it via `explorer.exe` so MEGAcmd
   installs **standalone** to the real `%LOCALAPPDATA%\MEGAcmd` — outside the MSIX
   package container, so its server auto-spawn works and the session is shared. The
   install is interactive: complete the dialog, then retry (`megacmd_setup` reports

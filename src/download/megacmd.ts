@@ -273,9 +273,10 @@ export function sanitizeVersion(v: string): string {
  * binary against the user's already-authenticated MEGA session.
  *
  * Identity-based, NOT hash-based, so it survives MEGAcmd self-updates (the
- * binary content changes but the signer stays "Mega Limited"):
+ * binary content changes but the signer identity stays MEGA's):
  *  - macOS: Developer-ID code signature + notarization (+ optional team id).
- *  - Windows: the server exe's Authenticode signature (signer "Mega Limited").
+ *  - Windows: the server and client exes' Authenticode signatures (signer one
+ *    of WIN_SIGNER_IDENTITIES: "Mega Limited" or "MEGA Privacy LLC").
  *  - Linux: no per-binary code signature exists, so fall back to the
  *    install-time SHA-256 when one was recorded (cache installs only).
  *
@@ -463,7 +464,7 @@ async function acquireWindows(config: Config, onProgress: (p: string) => void): 
       return { ok: false, reason: 'hash_mismatch', detail: `Downloaded artifact hash ${hash.slice(0, 12)}… is not in the vetted allowlist.` };
     }
 
-    // Integrity gate: Authenticode (signer Organization = Mega Limited, trusted
+    // Integrity gate: Authenticode (signer = one of WIN_SIGNER_IDENTITIES, trusted
     // chain, optional thumbprint pin) BEFORE we run it. Hash pin above is optional.
     onProgress('verifying-signature');
     await verifyAuthenticodeWin(exe, config.download.winThumbprint);
@@ -534,13 +535,41 @@ function launchViaExplorer(target: string): void {
   child.unref();
 }
 
+/**
+ * The code-signing identities MEGA ships MEGAcmd for Windows under. A signer
+ * certificate is accepted when its subject carries EVERY RDN of at least one
+ * entry, each compared exactly (case-sensitive) against the parsed RDN list:
+ *  - "Mega Limited": the historical signer (MEGAcmd up to 2.6.x).
+ *  - "MEGA Privacy LLC": the signer from MEGAcmd 2.7.0 (installer signed
+ *    2026-10-21) under an EV certificate issued by GlobalSign GCC R45 EV
+ *    CodeSigning CA 2020. An Organization name alone is not unique across
+ *    jurisdictions, so this identity is also pinned to its EV registration:
+ *    jurisdiction (HU) and company register number (13-09-239012), both of which
+ *    the CA vets for an EV certificate.
+ * Windows has no short name for jurisdictionC (1.3.6.1.4.1.311.60.2.1.3), so
+ * X500DistinguishedName.Format renders it in dotted-OID form; serialNumber
+ * (2.5.4.5) renders as SERIALNUMBER.
+ */
+export const WIN_SIGNER_IDENTITIES: readonly (readonly string[])[] = [
+  ['O=Mega Limited'],
+  ['O=MEGA Privacy LLC', 'SERIALNUMBER=13-09-239012', 'OID.1.3.6.1.4.1.311.60.2.1.3=HU'],
+];
+
+/**
+ * True when the signer subject (one RDN per entry, as produced by
+ * X500DistinguishedName.Format($true)) matches one of WIN_SIGNER_IDENTITIES.
+ */
+export function isMegaWinSigner(rdns: readonly string[]): boolean {
+  return WIN_SIGNER_IDENTITIES.some((identity) => identity.every((rdn) => rdns.includes(rdn)));
+}
+
 async function verifyAuthenticodeWin(exe: string, thumbprint?: string): Promise<void> {
   // Identity pin (Windows analogue of the macOS Developer-ID team-id pin):
   //  - Status must be 'Valid' (trusted chain; blocks self-signed / untrusted).
-  //  - the signer Organization must be EXACTLY "Mega Limited".
+  //  - the signer subject must match one of WIN_SIGNER_IDENTITIES exactly.
   //  - if a certificate thumbprint is configured, it must match exactly.
   //
-  // The O= comparison reads the PARSED RDN list, one per line, never the flattened
+  // The comparison reads the PARSED RDN list, one per line, never the flattened
   // DN string. Matching the flat form is unsafe however it is anchored, because
   // .NET renders an RDN value containing a comma in double quotes: a certificate
   // whose CN is `Evil Corp, O=Mega Limited, X` flattens to
@@ -550,18 +579,22 @@ async function verifyAuthenticodeWin(exe: string, thumbprint?: string): Promise<
   // `STREET="Level 21, Huawei Centre 120 Albert Street"`.
   // Not GetNameInfo(SimpleName) either — that returns the CN, which is a weaker
   // claim than the Organization a CA actually vets.
+  //
+  // PowerShell checks status, presence and thumbprint, then prints the parsed RDN
+  // list; the identity match runs here (isMegaWinSigner) so the accepted
+  // identities live in one place and are unit-testable on every platform.
   const ps =
     `$ErrorActionPreference='Stop'; ` +
     `$s = Microsoft.PowerShell.Security\\Get-AuthenticodeSignature -LiteralPath $env:MEGA_VERIFY_PATH; ` +
     `if ($s.Status -ne 'Valid') { exit 3 }; ` +
     `$c = $s.SignerCertificate; ` +
     `if (-not $c) { exit 4 }; ` +
-    `$rdns = $c.SubjectName.Format($true) -split "\`r?\`n" | ForEach-Object { $_.Trim() }; ` +
-    `if (-not ($rdns -ccontains 'O=Mega Limited')) { exit 4 }; ` +
     `if ($env:MEGA_VERIFY_THUMBPRINT -and ($c.Thumbprint -ne $env:MEGA_VERIFY_THUMBPRINT)) { exit 5 }; ` +
+    `$c.SubjectName.Format($true) -split "\`r?\`n" | ForEach-Object { [Console]::Out.WriteLine($_.Trim()) }; ` +
     `exit 0`;
+  let rdns: string[];
   try {
-    await pExecFile(systemTool('powershell'), ['-NoProfile', '-NonInteractive', '-Command', ps], {
+    const { stdout } = await pExecFile(systemTool('powershell'), ['-NoProfile', '-NonInteractive', '-Command', ps], {
       windowsHide: true,
       ...VERIFY_EXEC,
       env: {
@@ -574,8 +607,12 @@ async function verifyAuthenticodeWin(exe: string, thumbprint?: string): Promise<
         ...(thumbprint ? { MEGA_VERIFY_THUMBPRINT: thumbprint } : {}),
       },
     });
+    rdns = String(stdout).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   } catch {
-    throw new Error(`signature_failed: Authenticode verification failed for ${basename(exe)} (expected a valid, trusted "O=Mega Limited" signature)`);
+    rdns = [];
+  }
+  if (!isMegaWinSigner(rdns)) {
+    throw new Error(`signature_failed: Authenticode verification failed for ${basename(exe)} (expected a valid, trusted signature from MEGA: "O=Mega Limited" or "O=MEGA Privacy LLC")`);
   }
 }
 

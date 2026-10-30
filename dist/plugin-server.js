@@ -22281,10 +22281,18 @@ function launchViaExplorer(target) {
   const child = spawn3(systemTool("explorer"), [real], { detached: true, stdio: "ignore" });
   child.unref();
 }
+var WIN_SIGNER_IDENTITIES = [
+  ["O=Mega Limited"],
+  ["O=MEGA Privacy LLC", "SERIALNUMBER=13-09-239012", "OID.1.3.6.1.4.1.311.60.2.1.3=HU"]
+];
+function isMegaWinSigner(rdns) {
+  return WIN_SIGNER_IDENTITIES.some((identity) => identity.every((rdn) => rdns.includes(rdn)));
+}
 async function verifyAuthenticodeWin(exe, thumbprint) {
-  const ps = `$ErrorActionPreference='Stop'; $s = Microsoft.PowerShell.Security\\Get-AuthenticodeSignature -LiteralPath $env:MEGA_VERIFY_PATH; if ($s.Status -ne 'Valid') { exit 3 }; $c = $s.SignerCertificate; if (-not $c) { exit 4 }; $rdns = $c.SubjectName.Format($true) -split "\`r?\`n" | ForEach-Object { $_.Trim() }; if (-not ($rdns -ccontains 'O=Mega Limited')) { exit 4 }; if ($env:MEGA_VERIFY_THUMBPRINT -and ($c.Thumbprint -ne $env:MEGA_VERIFY_THUMBPRINT)) { exit 5 }; exit 0`;
+  const ps = `$ErrorActionPreference='Stop'; $s = Microsoft.PowerShell.Security\\Get-AuthenticodeSignature -LiteralPath $env:MEGA_VERIFY_PATH; if ($s.Status -ne 'Valid') { exit 3 }; $c = $s.SignerCertificate; if (-not $c) { exit 4 }; if ($env:MEGA_VERIFY_THUMBPRINT -and ($c.Thumbprint -ne $env:MEGA_VERIFY_THUMBPRINT)) { exit 5 }; $c.SubjectName.Format($true) -split "\`r?\`n" | ForEach-Object { [Console]::Out.WriteLine($_.Trim()) }; exit 0`;
+  let rdns;
   try {
-    await pExecFile(systemTool("powershell"), ["-NoProfile", "-NonInteractive", "-Command", ps], {
+    const { stdout } = await pExecFile(systemTool("powershell"), ["-NoProfile", "-NonInteractive", "-Command", ps], {
       windowsHide: true,
       ...VERIFY_EXEC,
       env: {
@@ -22297,8 +22305,12 @@ async function verifyAuthenticodeWin(exe, thumbprint) {
         ...thumbprint ? { MEGA_VERIFY_THUMBPRINT: thumbprint } : {}
       }
     });
+    rdns = String(stdout).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   } catch {
-    throw new Error(`signature_failed: Authenticode verification failed for ${basename(exe)} (expected a valid, trusted "O=Mega Limited" signature)`);
+    rdns = [];
+  }
+  if (!isMegaWinSigner(rdns)) {
+    throw new Error(`signature_failed: Authenticode verification failed for ${basename(exe)} (expected a valid, trusted signature from MEGA: "O=Mega Limited" or "O=MEGA Privacy LLC")`);
   }
 }
 async function acquireLinux() {

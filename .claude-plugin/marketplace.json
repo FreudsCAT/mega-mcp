@@ -1,10 +1,10 @@
 {
-  "name": "mega",
+  "name": "mega-adnet",
   "owner": {
     "name": "Mega Limited",
     "url": "https://mega.io"
   },
-  "description": "MEGA's plugins for Claude Code and Cowork.",
+  "description": "ADNET's build of MEGA's plugin: mega-mcp with the Windows signer fix (MEGA Privacy LLC) until it is released upstream.",
   "plugins": [
     {
       "name": "mega-mcp",
@@ -13,9 +13,9 @@
       "category": "productivity",
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/meganz/mega-mcp.git",
+        "url": "https://github.com/FreudsCAT/mega-mcp.git",
         "path": "plugins/mega-mcp",
-        "ref": "release"
+        "ref": "fix/windows-accept-mega-privacy-llc-signer"
       }
     }
   ]
